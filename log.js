@@ -66,7 +66,7 @@ window.fetch = async function(...args) {
                   } else {
                     console.log(`[No button found] questionId: ${jsonData["currentQuestion"]["questionId"]}`);
                   }
-                }, 50);
+                }, 100);
               });
         } else if (jsonData["status"] == "completed") {
           setTimeout(() => {
@@ -88,9 +88,9 @@ window.fetch = async function(...args) {
                 } else {
                   console.log(`[No button found] selector: button.h-10`);
                 }
-              }, 3000);
-            }, 3000);
-          }, 3000);
+              }, 1500);
+            }, 1500);
+          }, 1500);
         }
       })
       .catch(() => {
