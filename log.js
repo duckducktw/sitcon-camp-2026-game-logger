@@ -45,11 +45,11 @@ window.fetch = async function(...args) {
               .then((answerData) => {
                 console.log(answerData);
                 const selector = responseSys[answerData["answer"]];
-                const button = selector && document.querySelector(selector);
+                const button = document.querySelector(selector);
                 if (button) {
                   button.click();
                 } else {
-                  console.log(`[No answer available yet] questionId: ${jsonData["currentQuestion"]["questionId"]}`);
+                  console.log(`[No button found] questionId: ${jsonData["currentQuestion"]["questionId"]}`);
                 }
               });
         }

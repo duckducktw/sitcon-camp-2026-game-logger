@@ -1,5 +1,6 @@
 import json
 import os
+from collections import Counter
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -60,8 +61,19 @@ def log(question: dict):
     return {"status": "logged", "questionId": question_id}
 
 
+def most_common_choice(questions: dict) -> str | None:
+    choices = [q["correctChoice"] for q in questions.values() if q.get("correctChoice")]
+    if not choices:
+        return None
+    return Counter(choices).most_common(1)[0][0]
+
+
 @app.get("/answer/{question_id}")
 def answer(question_id: str):
     questions = load_questions()
     question = questions.get(question_id)
-    return {"answer": question["correctChoice"] if question else None}
+    correct_choice = question["correctChoice"] if question else None
+    return {"answer": correct_choice or most_common_choice(questions)}
+
+
+
