@@ -76,4 +76,3 @@ def answer(question_id: str):
     return {"answer": correct_choice or most_common_choice(questions)}
 
 
-
