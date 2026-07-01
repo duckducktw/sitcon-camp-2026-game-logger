@@ -58,3 +58,10 @@ def log(question: dict):
     questions[question_id] = {field: question.get(field) for field in LOGGED_FIELDS}
     save_questions(questions)
     return {"status": "logged", "questionId": question_id}
+
+
+@app.get("/answer/{question_id}")
+def answer(question_id: str):
+    questions = load_questions()
+    question = questions.get(question_id)
+    return {"answer": question["correctChoice"] if question else None}

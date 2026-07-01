@@ -23,7 +23,6 @@ window.fetch = async function(...args) {
                 jsonData["currentQuestionResult"]
             );
 
-
             fetch("http://localhost:8000/log", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -32,6 +31,27 @@ window.fetch = async function(...args) {
               .then((res) => res.json())
               .then((data) => console.log(data));
             
+        } else if (Object.keys(jsonData).includes("currentQuestion") && jsonData["status"] == "active"){
+
+          const responseSys = {
+            "A": ".px-6 > div:nth-child(3) > div:nth-child(1) > button:nth-child(1)", 
+            "B": ".px-6 > div:nth-child(3) > div:nth-child(2) > button:nth-child(1)",
+            "C": ".px-6 > div:nth-child(3) > div:nth-child(3) > button:nth-child(1)",
+            "D": ".px-6 > div:nth-child(3) > div:nth-child(4) > button:nth-child(1)"
+          }
+
+          fetch(`http://localhost:8000/answer/${jsonData["currentQuestion"]["questionId"]}`)
+              .then((res) => res.json())
+              .then((answerData) => {
+                console.log(answerData);
+                const selector = responseSys[answerData["answer"]];
+                const button = selector && document.querySelector(selector);
+                if (button) {
+                  button.click();
+                } else {
+                  console.log(`[No answer available yet] questionId: ${jsonData["currentQuestion"]["questionId"]}`);
+                }
+              });
         }
       })
       .catch(() => {
