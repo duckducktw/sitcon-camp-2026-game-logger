@@ -59,6 +59,40 @@ def best_choice(questions: dict, question_id: str) -> str:
     return most_common_choice(questions) or "A"
 
 
+def format_answer(result: dict, answer: dict | None) -> str:
+    if not answer:
+        return "no answer"
+    choice = answer.get("choice")
+    choice_text = result.get(f"choice{choice}", "") if choice else "?"
+    mark = "correct" if answer.get("correct") else "wrong"
+    gained = answer.get("baseScore", 0) + answer.get("bonusScore", 0)
+    return f"{choice} \"{choice_text}\" [{mark}, +{gained}]"
+
+
+def report_result(host_player_id: str, result: dict) -> None:
+    answers = result.get("answers", [])
+    by_id = {a["playerId"]: a for a in answers}
+    me = by_id.get(host_player_id)
+    opponent = next((a for a in answers if a["playerId"] != host_player_id), None)
+
+    print(f"[result] Q{result['questionId']} \"{result['prompt']}\" -> correct answer: {result.get('correctChoice')}")
+    print(f"[result]   you: {format_answer(result, me)} | computer: {format_answer(result, opponent)}")
+    if result.get("explanation"):
+        print(f"[result]   explanation: {result['explanation']}")
+
+
+def report_match_completed(host_player_id: str, match: dict) -> None:
+    print(f"[match] completed {match['matchId']}")
+    for player in match.get("players", []):
+        label = "you" if player["playerId"] == host_player_id else player.get("nickname", player["playerId"])
+        reward = player.get("openPowerReward", 0)
+        drop = player.get("materialDrop")
+        drop_text = "none"
+        if drop and drop.get("dropped"):
+            drop_text = f"{drop.get('sitoneName')} x{drop.get('quantity')}"
+        print(f"[match]   {label}: score {player.get('score')} | reward {reward} | sitone drop: {drop_text}")
+
+
 def request_with_retry(client: httpx.Client, method: str, url: str, **kwargs) -> httpx.Response:
     while True:
         response = client.request(method, url, **kwargs)
@@ -74,20 +108,24 @@ def request_with_retry(client: httpx.Client, method: str, url: str, **kwargs) ->
 def play_match(client: httpx.Client, questions: dict) -> None:
     match = request_with_retry(client, "POST", f"{BASE_URL}/api/matches/computer").json()
     match_id = match["matchId"]
+    host_player_id = match["hostPlayerId"]
     print(f"[match] created {match_id}")
 
     request_with_retry(client, "POST", f"{BASE_URL}/api/matches/{match_id}/ready")
 
     answered_question_id = None
+    reported_result_id = None
     while True:
         match = request_with_retry(client, "GET", f"{BASE_URL}/api/matches/{match_id}").json()
 
         result = match.get("currentQuestionResult")
-        if result:
+        if result and result.get("questionId") != reported_result_id:
+            report_result(host_player_id, result)
             log_question_result(questions, result)
+            reported_result_id = result["questionId"]
 
         if match["status"] == "completed":
-            print(f"[match] completed {match_id}")
+            report_match_completed(host_player_id, match)
             return
 
         question = match.get("currentQuestion")
