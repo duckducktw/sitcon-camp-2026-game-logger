@@ -1,29 +1,31 @@
 # sitcon-2026-questions
 
-Helper tooling for the SITCON 2026 "battle" live quiz: a browser-side script
-that intercepts the quiz app's network traffic, and a small FastAPI service
-that records questions/answers and serves back the best-known answer.
+A standalone bot for the SITCON 2026 "battle" live quiz. It talks to the
+quiz API directly over HTTP — no browser required — playing matches,
+answering with the best-known choice, and learning correct answers as they
+are revealed.
 
 ## How it works
 
-1. **[log.js](log.js)** is pasted into the browser DevTools console while the
-   quiz app is open. It monkey-patches `window.fetch` to observe the app's
-   API calls:
-   - When a `currentQuestionResult` comes back (the correct answer for a
-     question that already closed), it POSTs the question + correct choice to
-     the local API (`/log`) so it's saved for next time.
-   - When a `currentQuestion` is active, it asks the local API
-     (`/answer/{questionId}`) for the best-known answer and automatically
-     clicks the matching choice button.
-   - When the round `status` is `completed`, it automatically navigates back
-     to `/battle/` and clicks through the "play again" buttons.
-2. **[main.py](main.py)** is a FastAPI app that persists logged questions to
-   `questions.json`:
-   - `POST /log` — stores a question's prompt/choices/correct answer, keyed
-     by `questionId` (no-op if already recorded).
-   - `GET /answer/{questionId}` — returns the correct choice if the question
-     is already known; otherwise falls back to the most common correct
-     choice seen so far (a reasonable guess for unseen questions).
+**[main.py](main.py)** drives the whole game loop against
+`https://camp.sitcon.party`:
+
+1. Creates a match against the computer opponent
+   (`POST /api/matches/computer`) and marks itself ready
+   (`POST /api/matches/{id}/ready`).
+2. Polls the match (`GET /api/matches/{id}`) once a second.
+   - When a `currentQuestion` appears that hasn't been answered yet, it picks
+     the best-known choice from `questions.json` (falling back to the most
+     common correct choice seen so far) and submits it
+     (`POST /api/matches/{id}/answers`).
+   - When a `currentQuestionResult` reveals the correct answer for a
+     question not yet recorded, it's saved to `questions.json` for next
+     time.
+3. When the match's `status` becomes `completed`, it immediately starts a
+   new match and repeats, forever (stop it with Ctrl+C).
+
+Any request that gets rate-limited (HTTP 429) is retried automatically,
+honoring the `Retry-After` header when present.
 
 ## Requirements
 
@@ -36,21 +38,22 @@ that records questions/answers and serves back the best-known answer.
 uv sync
 ```
 
-## Running the API
+## Running the bot
+
+You need the value of the `camp2026_auth` cookie from a logged-in browser
+session (DevTools → Application/Storage → Cookies).
 
 ```bash
-uv run fastapi dev main.py
+CAMP_AUTH_COOKIE=<your camp2026_auth cookie value> uv run main.py
 ```
 
-This starts the API on `http://localhost:8000`.
+The bot will keep playing matches until you stop it.
 
-## Using the browser script
+## Legacy browser script
 
-1. Start the API (above).
-2. Open the quiz app in your browser and open DevTools → Console.
-3. Paste the contents of [log.js](log.js) and press Enter.
-4. Play as normal — answers get logged automatically, and known questions
-   are auto-answered.
+**[log.js](log.js)** is an older approach: paste it into the browser
+DevTools console while the quiz app is open to observe/auto-play via the UI
+instead of `main.py`. It's kept for reference but is no longer required.
 
 ## Utilities
 

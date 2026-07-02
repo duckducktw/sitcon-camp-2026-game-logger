@@ -88,9 +88,9 @@ window.fetch = async function(...args) {
                 } else {
                   console.log(`[No button found] selector: button.h-10`);
                 }
-              }, 1500);
-            }, 1500);
-          }, 1500);
+              }, 3000);
+            }, 3000);
+          }, 3000);
         }
       })
       .catch(() => {

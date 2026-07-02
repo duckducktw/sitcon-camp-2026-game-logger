@@ -1,20 +1,24 @@
 import json
 import os
+import time
 from collections import Counter
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+import httpx
 
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+BASE_URL = "https://camp.sitcon.party"
 QUESTIONS_FILE = "./questions.json"
+POLL_INTERVAL_SECONDS = 0.5
+DEFAULT_RETRY_AFTER_SECONDS = 3.0
+
+LOGGED_FIELDS = [
+    "questionId",
+    "prompt",
+    "choiceA",
+    "choiceB",
+    "choiceC",
+    "choiceD",
+    "correctChoice",
+]
 
 
 def load_questions() -> dict:
@@ -32,33 +36,13 @@ def save_questions(questions: dict) -> None:
         json.dump(questions, f, ensure_ascii=False, indent=2)
 
 
-@app.get("/")
-def read_root():
-    return {"Hello": "World"}
-
-
-LOGGED_FIELDS = [
-    "questionId",
-    "prompt",
-    "choiceA",
-    "choiceB",
-    "choiceC",
-    "choiceD",
-    "correctChoice",
-]
-
-
-@app.post("/log")
-def log(question: dict):
-    question_id = question.get("questionId")
-    questions = load_questions()
-
-    if question_id in questions:
-        return {"status": "exists", "questionId": question_id}
-
-    questions[question_id] = {field: question.get(field) for field in LOGGED_FIELDS}
+def log_question_result(questions: dict, result: dict) -> None:
+    question_id = result.get("questionId")
+    if question_id is None or question_id in questions:
+        return
+    questions[question_id] = {field: result.get(field) for field in LOGGED_FIELDS}
     save_questions(questions)
-    return {"status": "logged", "questionId": question_id}
+    print(f"[log] learned answer for question {question_id}: {result.get('correctChoice')}")
 
 
 def most_common_choice(questions: dict) -> str | None:
@@ -68,11 +52,87 @@ def most_common_choice(questions: dict) -> str | None:
     return Counter(choices).most_common(1)[0][0]
 
 
-@app.get("/answer/{question_id}")
-def answer(question_id: str):
+def best_choice(questions: dict, question_id: str) -> str:
+    known = questions.get(question_id)
+    if known and known.get("correctChoice"):
+        return known["correctChoice"]
+    return most_common_choice(questions) or "A"
+
+
+def request_with_retry(client: httpx.Client, method: str, url: str, **kwargs) -> httpx.Response:
+    while True:
+        response = client.request(method, url, **kwargs)
+        if response.status_code == 429:
+            wait_seconds = float(response.headers.get("Retry-After", DEFAULT_RETRY_AFTER_SECONDS))
+            print(f"[429] rate limited on {method} {url}, retrying in {wait_seconds:.1f}s")
+            time.sleep(wait_seconds)
+            continue
+        response.raise_for_status()
+        return response
+
+
+def play_match(client: httpx.Client, questions: dict) -> None:
+    match = request_with_retry(client, "POST", f"{BASE_URL}/api/matches/computer").json()
+    match_id = match["matchId"]
+    print(f"[match] created {match_id}")
+
+    request_with_retry(client, "POST", f"{BASE_URL}/api/matches/{match_id}/ready")
+
+    answered_question_id = None
+    while True:
+        match = request_with_retry(client, "GET", f"{BASE_URL}/api/matches/{match_id}").json()
+
+        result = match.get("currentQuestionResult")
+        if result:
+            log_question_result(questions, result)
+
+        if match["status"] == "completed":
+            print(f"[match] completed {match_id}")
+            return
+
+        question = match.get("currentQuestion")
+        if question and question["questionId"] != answered_question_id:
+            choice = best_choice(questions, question["questionId"])
+            print(f"[answer] question {question['questionId']} -> {choice}")
+            request_with_retry(
+                client,
+                "POST",
+                f"{BASE_URL}/api/matches/{match_id}/answers",
+                json={"questionId": question["questionId"], "choice": choice},
+            )
+            answered_question_id = question["questionId"]
+
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+
+def main() -> None:
+    auth_cookie = os.environ.get("CAMP_AUTH_COOKIE")
+    if not auth_cookie:
+        raise SystemExit(
+            "Set CAMP_AUTH_COOKIE to the value of the camp2026_auth cookie "
+            "(copy it from your browser's DevTools after logging in)."
+        )
+
     questions = load_questions()
-    question = questions.get(question_id)
-    correct_choice = question["correctChoice"] if question else None
-    return {"answer": correct_choice or most_common_choice(questions)}
+    headers = {
+        "Accept": "application/json",
+        "Origin": BASE_URL,
+        "Referer": f"{BASE_URL}/battle",
+    }
+    cookies = {"camp2026_auth": auth_cookie}
+
+    with httpx.Client(headers=headers, cookies=cookies, timeout=10.0) as client:
+        while True:
+            try:
+                play_match(client, questions)
+            except httpx.HTTPStatusError as error:
+                print(f"[error] {error}")
+                time.sleep(DEFAULT_RETRY_AFTER_SECONDS)
+            time.sleep(POLL_INTERVAL_SECONDS)
 
 
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
