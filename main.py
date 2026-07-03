@@ -93,14 +93,34 @@ def report_match_completed(host_player_id: str, match: dict) -> None:
         print(f"[match]   {label}: score {player.get('score')} | reward {reward} | sitone drop: {drop_text}")
 
 
+RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
+MAX_RETRY_WAIT_SECONDS = 30.0
+
+
 def request_with_retry(client: httpx.Client, method: str, url: str, **kwargs) -> httpx.Response:
+    attempt = 0
     while True:
-        response = client.request(method, url, **kwargs)
+        attempt += 1
+        try:
+            response = client.request(method, url, **kwargs)
+        except httpx.TransportError as error:
+            wait_seconds = min(DEFAULT_RETRY_AFTER_SECONDS * attempt, MAX_RETRY_WAIT_SECONDS)
+            print(f"[retry] {method} {url} failed ({error}), retrying in {wait_seconds:.1f}s")
+            time.sleep(wait_seconds)
+            continue
+
         if response.status_code == 429:
             wait_seconds = float(response.headers.get("Retry-After", DEFAULT_RETRY_AFTER_SECONDS))
             print(f"[429] rate limited on {method} {url}, retrying in {wait_seconds:.1f}s")
             time.sleep(wait_seconds)
             continue
+
+        if response.status_code in RETRYABLE_STATUS_CODES:
+            wait_seconds = min(DEFAULT_RETRY_AFTER_SECONDS * attempt, MAX_RETRY_WAIT_SECONDS)
+            print(f"[{response.status_code}] server error on {method} {url}, retrying in {wait_seconds:.1f}s")
+            time.sleep(wait_seconds)
+            continue
+
         response.raise_for_status()
         return response
 
@@ -163,7 +183,7 @@ def main() -> None:
         while True:
             try:
                 play_match(client, questions)
-            except httpx.HTTPStatusError as error:
+            except httpx.HTTPError as error:
                 print(f"[error] {error}")
                 time.sleep(DEFAULT_RETRY_AFTER_SECONDS)
             time.sleep(POLL_INTERVAL_SECONDS)
