@@ -97,7 +97,9 @@ RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
 MAX_RETRY_WAIT_SECONDS = 30.0
 
 
-def request_with_retry(client: httpx.Client, method: str, url: str, **kwargs) -> httpx.Response:
+def request_with_retry(
+    client: httpx.Client, method: str, url: str, allow_404: bool = False, **kwargs
+) -> httpx.Response:
     attempt = 0
     while True:
         attempt += 1
@@ -121,17 +123,34 @@ def request_with_retry(client: httpx.Client, method: str, url: str, **kwargs) ->
             time.sleep(wait_seconds)
             continue
 
+        if response.status_code == 404 and allow_404:
+            return response
+
         response.raise_for_status()
         return response
 
 
-def play_match(client: httpx.Client, questions: dict) -> None:
-    match = request_with_retry(client, "POST", f"{BASE_URL}/api/matches/computer").json()
-    match_id = match["matchId"]
-    host_player_id = match["hostPlayerId"]
-    print(f"[match] created {match_id}")
+def find_open_match(client: httpx.Client) -> dict | None:
+    response = request_with_retry(client, "GET", f"{BASE_URL}/api/matches/open", allow_404=True)
+    if response.status_code == 404:
+        return None
+    return response.json()
 
-    request_with_retry(client, "POST", f"{BASE_URL}/api/matches/{match_id}/ready")
+
+def play_match(client: httpx.Client, questions: dict) -> None:
+    match = find_open_match(client)
+    if match is not None:
+        match_id = match["matchId"]
+        print(f"[match] resuming open match {match_id}")
+    else:
+        match = request_with_retry(client, "POST", f"{BASE_URL}/api/matches/computer").json()
+        match_id = match["matchId"]
+        print(f"[match] created {match_id}")
+
+    host_player_id = match["hostPlayerId"]
+    host_player = next((p for p in match.get("players", []) if p["playerId"] == host_player_id), None)
+    if not host_player or not host_player.get("ready"):
+        request_with_retry(client, "POST", f"{BASE_URL}/api/matches/{match_id}/ready")
 
     answered_question_id = None
     reported_result_id = None
