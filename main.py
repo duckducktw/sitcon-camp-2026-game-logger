@@ -7,7 +7,7 @@ import httpx
 
 BASE_URL = "https://camp.sitcon.party"
 QUESTIONS_FILE = "./questions.json"
-POLL_INTERVAL_SECONDS = 0.5
+POLL_INTERVAL_SECONDS = 0.3 
 DEFAULT_RETRY_AFTER_SECONDS = 3.0
 
 LOGGED_FIELDS = [
@@ -98,7 +98,7 @@ MAX_RETRY_WAIT_SECONDS = 30.0
 
 
 def request_with_retry(
-    client: httpx.Client, method: str, url: str, allow_404: bool = False, **kwargs
+    client: httpx.Client, method: str, url: str, allow_statuses: set[int] = frozenset(), **kwargs
 ) -> httpx.Response:
     attempt = 0
     while True:
@@ -123,27 +123,27 @@ def request_with_retry(
             time.sleep(wait_seconds)
             continue
 
-        if response.status_code == 404 and allow_404:
+        if response.status_code in allow_statuses:
             return response
 
         response.raise_for_status()
         return response
 
 
-def find_open_match(client: httpx.Client) -> dict | None:
-    response = request_with_retry(client, "GET", f"{BASE_URL}/api/matches/open", allow_404=True)
-    if response.status_code == 404:
-        return None
-    return response.json()
+def find_open_match(client: httpx.Client) -> dict:
+    return request_with_retry(client, "GET", f"{BASE_URL}/api/matches/open").json()
 
 
 def play_match(client: httpx.Client, questions: dict) -> None:
-    match = find_open_match(client)
-    if match is not None:
+    response = request_with_retry(
+        client, "POST", f"{BASE_URL}/api/matches/computer", allow_statuses={409}
+    )
+    if response.status_code == 409:
+        match = find_open_match(client)
         match_id = match["matchId"]
         print(f"[match] resuming open match {match_id}")
     else:
-        match = request_with_retry(client, "POST", f"{BASE_URL}/api/matches/computer").json()
+        match = response.json()
         match_id = match["matchId"]
         print(f"[match] created {match_id}")
 
