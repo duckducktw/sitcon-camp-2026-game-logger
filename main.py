@@ -6,6 +6,7 @@ from collections import Counter
 import httpx
 
 BASE_URL = "https://camp.sitcon.party"
+OPPONENT_MATCH_URL = "https://for-sitcon-camp-game.tofu1201.tw/api/play_match"
 QUESTIONS_FILE = "./questions.json"
 POLL_INTERVAL_SECONDS = 0.3 
 DEFAULT_RETRY_AFTER_SECONDS = 3.0
@@ -134,9 +135,17 @@ def find_open_match(client: httpx.Client) -> dict:
     return request_with_retry(client, "GET", f"{BASE_URL}/api/matches/open").json()
 
 
-def play_match(client: httpx.Client, questions: dict) -> None:
+def request_opponent(opponent_client: httpx.Client, code: str) -> None:
     response = request_with_retry(
-        client, "POST", f"{BASE_URL}/api/matches/computer", allow_statuses={409}
+        opponent_client, "POST", OPPONENT_MATCH_URL, json={"code": code}
+    )
+    data = response.json()
+    print(f"[match] opponent request for code {code}: {data.get('status')} (queue_size={data.get('queue_size')})")
+
+
+def play_match(client: httpx.Client, opponent_client: httpx.Client, questions: dict) -> None:
+    response = request_with_retry(
+        client, "POST", f"{BASE_URL}/api/matches", allow_statuses={409}
     )
     if response.status_code == 409:
         match = find_open_match(client)
@@ -145,7 +154,10 @@ def play_match(client: httpx.Client, questions: dict) -> None:
     else:
         match = response.json()
         match_id = match["matchId"]
-        print(f"[match] created {match_id}")
+        print(f"[match] created {match_id} (code {match.get('code')})")
+
+    if match.get("status") == "waiting" and len(match.get("players", [])) < 2:
+        request_opponent(opponent_client, match["code"])
 
     host_player_id = match["hostPlayerId"]
     host_player = next((p for p in match.get("players", []) if p["playerId"] == host_player_id), None)
@@ -198,10 +210,13 @@ def main() -> None:
     }
     cookies = {"camp2026_auth": auth_cookie}
 
-    with httpx.Client(headers=headers, cookies=cookies, timeout=10.0) as client:
+    with (
+        httpx.Client(headers=headers, cookies=cookies, timeout=10.0) as client,
+        httpx.Client(timeout=10.0) as opponent_client,
+    ):
         while True:
             try:
-                play_match(client, questions)
+                play_match(client, opponent_client, questions)
             except httpx.HTTPError as error:
                 print(f"[error] {error}")
                 time.sleep(DEFAULT_RETRY_AFTER_SECONDS)
