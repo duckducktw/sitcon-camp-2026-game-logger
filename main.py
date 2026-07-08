@@ -144,30 +144,24 @@ def request_opponent(opponent_client: httpx.Client, code: str) -> None:
 
 
 def play_match(client: httpx.Client, opponent_client: httpx.Client, questions: dict) -> None:
-    response = request_with_retry(
-        client, "POST", f"{BASE_URL}/api/matches", allow_statuses={409}
-    )
-    if response.status_code == 409:
-        match = find_open_match(client)
-        match_id = match["matchId"]
-        print(f"[match] resuming open match {match_id}")
-    else:
-        match = response.json()
-        match_id = match["matchId"]
-        print(f"[match] created {match_id} (code {match.get('code')})")
-
-    if match.get("status") == "waiting" and len(match.get("players", [])) < 2:
-        request_opponent(opponent_client, match["code"])
+    # Auto room creation / opponent request / ready is disabled for now.
+    # We only watch the open match via /api/matches/open + /api/matches/{id}
+    # and start auto-answering once the match has started.
+    match = find_open_match(client)
+    match_id = match["matchId"]
+    print(f"[match] watching open match {match_id} (status={match.get('status')})")
 
     host_player_id = match["hostPlayerId"]
-    host_player = next((p for p in match.get("players", []) if p["playerId"] == host_player_id), None)
-    if not host_player or not host_player.get("ready"):
-        request_with_retry(client, "POST", f"{BASE_URL}/api/matches/{match_id}/ready")
 
+    match_started = match.get("status") not in (None, "waiting")
     answered_question_id = None
     reported_result_id = None
     while True:
         match = request_with_retry(client, "GET", f"{BASE_URL}/api/matches/{match_id}").json()
+
+        if not match_started and match["status"] != "waiting":
+            match_started = True
+            print(f"[match] {match_id} started")
 
         result = match.get("currentQuestionResult")
         if result and result.get("questionId") != reported_result_id:
@@ -179,17 +173,18 @@ def play_match(client: httpx.Client, opponent_client: httpx.Client, questions: d
             report_match_completed(host_player_id, match)
             return
 
-        question = match.get("currentQuestion")
-        if question and question["questionId"] != answered_question_id:
-            choice = best_choice(questions, question["questionId"])
-            print(f"[answer] question {question['questionId']} -> {choice}")
-            request_with_retry(
-                client,
-                "POST",
-                f"{BASE_URL}/api/matches/{match_id}/answers",
-                json={"questionId": question["questionId"], "choice": choice},
-            )
-            answered_question_id = question["questionId"]
+        if match_started:
+            question = match.get("currentQuestion")
+            if question and question["questionId"] != answered_question_id:
+                choice = best_choice(questions, question["questionId"])
+                print(f"[answer] question {question['questionId']} -> {choice}")
+                request_with_retry(
+                    client,
+                    "POST",
+                    f"{BASE_URL}/api/matches/{match_id}/answers",
+                    json={"questionId": question["questionId"], "choice": choice},
+                )
+                answered_question_id = question["questionId"]
 
         time.sleep(POLL_INTERVAL_SECONDS)
 
