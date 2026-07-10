@@ -6,10 +6,11 @@ from collections import Counter
 import httpx
 
 BASE_URL = "https://camp.sitcon.party"
-OPPONENT_MATCH_URL = "https://for-sitcon-camp-game.tofu1201.tw/api/play_match"
 QUESTIONS_FILE = "./questions.json"
 POLL_INTERVAL_SECONDS = 0.3 
 DEFAULT_RETRY_AFTER_SECONDS = 3.0
+DEFAULT_COMPUTER_PLAYERS = 3
+ROOM_PLAYER_LIMIT = 4
 
 LOGGED_FIELDS = [
     "questionId",
@@ -74,10 +75,11 @@ def report_result(host_player_id: str, result: dict) -> None:
     answers = result.get("answers", [])
     by_id = {a["playerId"]: a for a in answers}
     me = by_id.get(host_player_id)
-    opponent = next((a for a in answers if a["playerId"] != host_player_id), None)
+    opponents = [a for a in answers if a["playerId"] != host_player_id]
+    opponent_text = " | ".join(format_answer(result, answer) for answer in opponents) or "no answer"
 
     print(f"[result] Q{result['questionId']} \"{result['prompt']}\" -> correct answer: {result.get('correctChoice')}")
-    print(f"[result]   you: {format_answer(result, me)} | computer: {format_answer(result, opponent)}")
+    print(f"[result]   you: {format_answer(result, me)} | computers: {opponent_text}")
     if result.get("explanation"):
         print(f"[result]   explanation: {result['explanation']}")
 
@@ -135,22 +137,87 @@ def find_open_match(client: httpx.Client) -> dict:
     return request_with_retry(client, "GET", f"{BASE_URL}/api/matches/open").json()
 
 
-def request_opponent(opponent_client: httpx.Client, code: str) -> None:
+def load_desired_computer_players() -> int:
+    value = os.environ.get("CAMP_COMPUTER_PLAYERS")
+    if value is None:
+        return DEFAULT_COMPUTER_PLAYERS
+
+    try:
+        count = int(value)
+    except ValueError as error:
+        raise SystemExit("CAMP_COMPUTER_PLAYERS must be an integer.") from error
+
+    max_computer_players = ROOM_PLAYER_LIMIT - 1
+    if count < 0 or count > max_computer_players:
+        raise SystemExit(f"CAMP_COMPUTER_PLAYERS must be between 0 and {max_computer_players}.")
+    return count
+
+
+def create_room_match(client: httpx.Client) -> dict:
     response = request_with_retry(
-        opponent_client, "POST", OPPONENT_MATCH_URL, json={"code": code}
+        client, "POST", f"{BASE_URL}/api/matches/multiplayer/pairings", allow_statuses={409}
     )
+    if response.status_code == 409:
+        match = find_open_match(client)
+        print(f"[match] resuming open match {match['matchId']} (status={match.get('status')})")
+        return match
+
     data = response.json()
-    print(f"[match] opponent request for code {code}: {data.get('status')} (queue_size={data.get('queue_size')})")
+    match = data["match"]
+    print(f"[match] created room {match['matchId']}")
+    return match
 
 
-def play_match(client: httpx.Client, opponent_client: httpx.Client, questions: dict) -> None:
-    # Auto room creation / opponent request / ready is disabled for now.
-    # We only watch the open match via /api/matches/open + /api/matches/{id}
-    # and start auto-answering once the match has started.
-    match = find_open_match(client)
+def computer_player_count(match: dict) -> int:
+    return sum(1 for player in match.get("players", []) if player.get("kind") == "computer")
+
+
+def add_computer_players(client: httpx.Client, match: dict, desired_computer_players: int) -> dict:
     match_id = match["matchId"]
-    print(f"[match] watching open match {match_id} (status={match.get('status')})")
+    while (
+        match.get("status") == "waiting"
+        and computer_player_count(match) < desired_computer_players
+        and len(match.get("players", [])) < ROOM_PLAYER_LIMIT
+    ):
+        response = request_with_retry(
+            client,
+            "POST",
+            f"{BASE_URL}/api/matches/{match_id}/computer-players",
+            allow_statuses={400, 409},
+        )
+        if response.status_code in {400, 409}:
+            print(f"[match] cannot add more computer players: {response.text.strip()}")
+            return match
 
+        match = response.json()
+        print(
+            f"[match] added computer player "
+            f"({computer_player_count(match)}/{desired_computer_players})"
+        )
+
+    return match
+
+
+def mark_host_ready(client: httpx.Client, match: dict) -> dict:
+    if match.get("status") != "waiting":
+        return match
+
+    host_player_id = match["hostPlayerId"]
+    host_player = next((p for p in match.get("players", []) if p["playerId"] == host_player_id), None)
+    if host_player and host_player.get("ready"):
+        return match
+
+    match = request_with_retry(client, "POST", f"{BASE_URL}/api/matches/{match['matchId']}/ready").json()
+    print(f"[match] host ready (status={match.get('status')})")
+    return match
+
+
+def play_match(client: httpx.Client, questions: dict, desired_computer_players: int) -> None:
+    match = create_room_match(client)
+    match = add_computer_players(client, match, desired_computer_players)
+    match = mark_host_ready(client, match)
+
+    match_id = match["matchId"]
     host_player_id = match["hostPlayerId"]
 
     match_started = match.get("status") not in (None, "waiting")
@@ -198,20 +265,18 @@ def main() -> None:
         )
 
     questions = load_questions()
+    desired_computer_players = load_desired_computer_players()
     headers = {
         "Accept": "application/json",
         "Origin": BASE_URL,
-        "Referer": f"{BASE_URL}/battle",
+        "Referer": f"{BASE_URL}/battle/room",
     }
     cookies = {"camp2026_auth": auth_cookie}
 
-    with (
-        httpx.Client(headers=headers, cookies=cookies, timeout=10.0) as client,
-        httpx.Client(timeout=10.0) as opponent_client,
-    ):
+    with httpx.Client(headers=headers, cookies=cookies, timeout=10.0) as client:
         while True:
             try:
-                play_match(client, opponent_client, questions)
+                play_match(client, questions, desired_computer_players)
             except httpx.HTTPError as error:
                 print(f"[error] {error}")
                 time.sleep(DEFAULT_RETRY_AFTER_SECONDS)

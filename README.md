@@ -10,9 +10,9 @@ are revealed.
 **[main.py](main.py)** drives the whole game loop against
 `https://camp.sitcon.party`:
 
-1. Creates a match against the computer opponent
-   (`POST /api/matches/computer`) and marks itself ready
-   (`POST /api/matches/{id}/ready`).
+1. Creates a room-mode match (`POST /api/matches/multiplayer/pairings`),
+   adds computer players (`POST /api/matches/{id}/computer-players`), and
+   marks itself ready (`POST /api/matches/{id}/ready`).
 2. Polls the match (`GET /api/matches/{id}`) once a second.
    - When a `currentQuestion` appears that hasn't been answered yet, it picks
      the best-known choice from `questions.json` (falling back to the most
@@ -48,6 +48,13 @@ CAMP_AUTH_COOKIE=<your camp2026_auth cookie value> uv run main.py
 ```
 
 The bot will keep playing matches until you stop it.
+
+By default it fills the room with 3 computer players, matching the current
+room flow. Override that with `CAMP_COMPUTER_PLAYERS` if needed:
+
+```bash
+CAMP_AUTH_COOKIE=<your camp2026_auth cookie value> CAMP_COMPUTER_PLAYERS=1 uv run main.py
+```
 
 ## Legacy browser script
 
